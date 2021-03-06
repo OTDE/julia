@@ -299,6 +299,15 @@ function finish_cfg_inline!(state::CFGInliningState)
     end
 end
 
+function transform_opaque_env!(ir::IRCode, @nospecialize(stmt′))
+    # If this is an access into the opaque closure environment,
+    # rewrite it to a call to `getfield_opaque_env`
+    if isexpr(stmt′, :call) && is_known_call(stmt′, getfield, ir, Any[]) && stmt′.args[2] === Argument(1)
+        stmt′.args[1] = Core.getfield_opaque_env
+    end
+    nothing
+end
+
 function ir_inline_item!(compact::IncrementalCompact, idx::Int, argexprs::Vector{Any},
                          linetable::Vector{LineInfoNode}, item::InliningTodo,
                          boundscheck::Symbol, todo_bbs::Vector{Tuple{Int, Int}})
@@ -326,6 +335,8 @@ function ir_inline_item!(compact::IncrementalCompact, idx::Int, argexprs::Vector
             boundscheck_idx = :off
         end
     end
+    mi = item.mi
+    is_opaque = isa(mi.def, Method) && mi.def.is_for_opaque_closure
     # If the iterator already moved on to the next basic block,
     # temporarily re-open in again.
     local return_value
@@ -335,6 +346,7 @@ function ir_inline_item!(compact::IncrementalCompact, idx::Int, argexprs::Vector
         #compact[idx] = nothing
         inline_compact = IncrementalCompact(compact, spec.ir, compact.result_idx)
         for ((_, idx′), stmt′) in inline_compact
+            is_opaque && transform_opaque_env!(spec.ir, stmt′)
             # This dance is done to maintain accurate usage counts in the
             # face of rename_arguments! mutating in place - should figure out
             # something better eventually.
@@ -365,6 +377,7 @@ function ir_inline_item!(compact::IncrementalCompact, idx::Int, argexprs::Vector
         #compact[idx] = nothing
         inline_compact = IncrementalCompact(compact, spec.ir, compact.result_idx)
         for ((_, idx′), stmt′) in inline_compact
+            is_opaque && transform_opaque_env!(spec.ir, stmt′)
             inline_compact[idx′] = nothing
             stmt′ = ssa_substitute!(idx′, stmt′, argexprs, item.mi.def.sig, item.mi.sparam_vals, linetable_offset, boundscheck_idx, compact)
             if isa(stmt′, ReturnNode)
@@ -1068,8 +1081,11 @@ function narrow_opaque_closure!(ir::IRCode, stmt::Expr, @nospecialize(info), sta
             # N.B.: Narrowing the ub requires a backdge on the mi whose type
             # information we're using, since a change in that function may
             # invalidate ub result.
-            push!(state.et, unspec_call_info.mi)
-            stmt.args[4] = newT
+            mi = Core.Compiler.specialize_method(unspec_call_info.match, true)
+            if mi !== nothing
+                push!(state.et, mi)
+                stmt.args[4] = newT
+            end
         end
     end
 end
@@ -1266,6 +1282,12 @@ function assemble_inline_todo!(ir::IRCode, state::InliningState)
             else
                 info = info.call
             end
+        end
+
+        if isa(info, OpaqueClosureCallInfo)
+            result = analyze_method!(info.match, sig.atypes, state, calltype)
+            handle_single_case!(ir, stmt, idx, result, false, todo)
+            continue
         end
 
         # Handle invoke

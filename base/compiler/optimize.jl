@@ -368,6 +368,9 @@ function statement_cost(ex::Expr, line::Int, src::Union{CodeInfo, IRCode}, sptyp
                 return 20
             end
             return T_FFUNC_COST[fidx]
+        elseif f === Core.getfield_opaque_env
+            # Treat like getfield
+            return 0
         end
         extyp = line == -1 ? Any : argextype(SSAValue(line), src, sptypes, slottypes)
         if extyp === Union{}

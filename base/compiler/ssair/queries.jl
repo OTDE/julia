@@ -49,6 +49,14 @@ function stmt_effect_free(@nospecialize(stmt), @nospecialize(rt), src, sptypes::
                 eT ⊑ fT || return false
             end
             return true
+        elseif head === :new_opaque_closure
+            a = ea[1]
+            typ = argextype(a, src, sptypes)
+            # `Expr(:new)` of unknown type could raise arbitrary TypeError.
+            typ, isexact = instanceof_tfunc(typ)
+            isexact || return false
+            typ ⊑ Tuple || return false
+            return true
         elseif head === :isdefined || head === :the_exception || head === :copyast || head === :inbounds || head === :boundscheck
             return true
         else
